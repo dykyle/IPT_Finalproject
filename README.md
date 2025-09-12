@@ -1,7 +1,7 @@
 # IPT_FinalProject
 
 ## Project Description
-Financial Forecasting using Python with Allowance as Datasets. This project tracks your daily expenses, calculates your daily allowance based on weekdays, and provides a savings forecast using Streamlit.
+Basic Financial Forecasting using Python with Allowance as Datasets. This project tracks your daily expenses, calculates your daily allowance based on weekdays, and provides a savings forecast using Streamlit.
 
 ## Features
     - Divide monthly allowance according to weekdays in a selected month.
