@@ -11,6 +11,15 @@ Basic Financial Forecasting using Python with Allowance as Datasets. This projec
     - Visualize expenses and savings over time using graphs.
     - Forecast savings for the next 5 weekdays.
 
+## Updated Feature
+    - Added sidebar for seamless navigation.
+    - Added additional Tab intended for "CSV Uploads"
+    - Added Quick Stats "Total Spent" and "Savings Rate"
+    - Added Clear data button to quickly remove all data inputs.
+    - Added "Upload CSV" for uploading existing datasets that will be used for CSV Analyzer Tab.
+    - Added Export Data with the same functionality as Download CSV.
+    - Updated a premium-like visual of the application.
+    
 ## Installation
     1. Download the project as a ZIP file from GitHub.
     2. Install Python (if not already installed).
