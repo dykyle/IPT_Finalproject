@@ -1,0 +1,52 @@
+[
+  {
+    "date": "2025-10-24",
+    "category": "Breakfast",
+    "food": "3/4 Cup Rice and San Marino Corned Tuna + 2Pcs Wheat Bread",
+    "beverage": "Water and Whey Protein + Creatine",
+    "protein": 50
+  },
+  {
+    "date": "2025-10-24",
+    "category": "Lunch",
+    "food": "1/2 Cup Rice, 120g Chicken, 120g Tofu, 120g Bok choy",
+    "beverage": "Water",
+    "protein": 50
+  },
+  {
+    "date": "2025-10-24",
+    "category": "Dinner",
+    "food": "2Pcs Wheat Bread w/ Peanut Butter, 3Pcs Hard-boiled egg, and Half cup dinuguan",
+    "beverage": "Water",
+    "protein": 48,
+    "notes": "",
+    "created_at": "2025-10-25T04:08:22.387855"
+  },
+  {
+    "date": "2025-10-23",
+    "category": "Breakfast",
+    "food": "1 Cup Rice, San Marino Corned Tuna, 2Pcs Wheat Bread",
+    "beverage": "Water and Whey Protein + Creatine",
+    "protein": 51,
+    "notes": "",
+    "created_at": "2025-10-25T04:17:10.881982"
+  },
+  {
+    "date": "2025-10-23",
+    "category": "Lunch",
+    "food": "1/2 Cup Rice + 120g Chicken + 120g Tofu w/ 120g Bok Choy",
+    "beverage": "",
+    "protein": 50,
+    "notes": "",
+    "created_at": "2025-10-25T04:19:36.446689"
+  },
+  {
+    "date": "2025-10-23",
+    "category": "Dinner",
+    "food": "4Pcs Wheat Bread + 4Pcs Scrambled Egg + 2Tbsp Peanut Butter",
+    "beverage": "Water",
+    "protein": 50,
+    "notes": "",
+    "created_at": "2025-10-25T04:22:17.244977"
+  }
+]
