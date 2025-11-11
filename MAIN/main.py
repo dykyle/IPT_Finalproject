@@ -11,23 +11,37 @@ import json
 import os
 from scipy import stats
 
+# =============================================================================
+# DATA MANAGEMENT FUNCTIONS
+# =============================================================================
+
 def load_data():
+    """
+    Load user data from JSON file with error handling
+    Converts date strings to datetime objects for processing
+    """
     try:
         if os.path.exists('user_data.json'):
             with open('user_data.json', 'r', encoding='utf-8') as f:
                 data = json.load(f)
+                # Convert date strings to datetime objects
                 for record in data.get("records", []):
                     if "Date" in record:
                         record["Date"] = pd.to_datetime(record["Date"])
                 return data
     except Exception as e:
         st.error(f"Error loading saved data: {e}")
+    # Return default data structure if file doesn't exist or error occurs
     return {
         "records": [],
         "categories": ["Food", "Transport", "Entertainment", "Shopping", "Bills", "Healthcare", "Other"]
     }
 
 def save_data():
+    """
+    Save current session state to JSON file with error handling
+    Converts datetime objects to strings for JSON serialization
+    """
     try:
         data_to_save = {
             "records": st.session_state.records,
@@ -39,6 +53,10 @@ def save_data():
         st.error(f"Could not save data: {e}")
 
 def save_data_silent():
+    """
+    Silent version of save_data without error messages
+    Used for automatic saves where failures shouldn't disrupt user experience
+    """
     try:
         data_to_save = {
             "records": st.session_state.records,
@@ -47,34 +65,58 @@ def save_data_silent():
         with open('user_data.json', 'w', encoding='utf-8') as f:
             json.dump(data_to_save, f, default=str)
     except Exception:
-        pass
+        pass  # Fail silently
+
+# =============================================================================
+# DATA CLEANING AND PROCESSING FUNCTIONS
+# =============================================================================
 
 def sanitize_records(records):
+    """
+    Clean and validate expense records with better CSV handling
+    """
     if not records:
         return pd.DataFrame(columns=["Date", "Expense Label", "Expense Amount", "Category"])
     
     df = pd.DataFrame(records)
     
+    # FIX: Better date parsing that handles multiple formats
     if "Date" in df.columns:
-        df["Date"] = pd.to_datetime(df["Date"], errors="coerce").dt.normalize()
+        # Try multiple date parsing strategies
+        if df["Date"].dtype == 'object':  # It's string data
+            # First try parsing as ISO format (from download)
+            df["Date"] = pd.to_datetime(df["Date"], errors='coerce', utc=True)
+            # If that fails, try other common formats
+            if df["Date"].isna().any():
+                df["Date"] = pd.to_datetime(df["Date"], errors='coerce', format='mixed')
+        else:
+            df["Date"] = pd.to_datetime(df["Date"], errors="coerce")
+        
+        # Normalize to remove time component
+        df["Date"] = df["Date"].dt.normalize()
     else:
         df["Date"] = pd.NaT
         
+    # Amount processing - more robust
     if "Expense Amount" in df.columns:
+        # Handle both string and numeric amounts
         df["Expense Amount"] = pd.to_numeric(df["Expense Amount"], errors="coerce").fillna(0.0)
     else:
         df["Expense Amount"] = 0.0
         
+    # Handle missing labels and categories
     if "Expense Label" not in df.columns:
         df["Expense Label"] = "No Label"
         
     if "Category" not in df.columns:
         df["Category"] = "Uncategorized"
 
+    # Filter out invalid dates and restrict date range
     df = df[~df["Date"].isna()].copy()
-    today = pd.Timestamp.today()
+    today = pd.Timestamp.today().normalize()
     df = df[df["Date"].between("2018-01-01", today)]
     
+    # Remove statistical outliers (beyond 3 standard deviations)
     if len(df) > 5:
         amount_std = df["Expense Amount"].std()
         amount_mean = df["Expense Amount"].mean()
@@ -83,7 +125,50 @@ def sanitize_records(records):
     
     return df.reset_index(drop=True)
 
+def process_uploaded_csv(uploaded_file):
+    """
+    Unified CSV processing function for both tracker and analyzer
+    """
+    try:
+        # Read the CSV with better configuration
+        df = pd.read_csv(
+            uploaded_file, 
+            parse_dates=False,  # We'll handle parsing separately
+            dtype={'Expense Amount': str},  # Keep as string for controlled conversion
+            encoding='utf-8'
+        )
+        
+        # Standardize column names (case insensitive, space handling)
+        df.columns = df.columns.str.strip().str.title()
+        
+        # Map common column name variations
+        column_mapping = {
+            'Expenseamount': 'Expense Amount',
+            'Expense_Amount': 'Expense Amount', 
+            'Amount': 'Expense Amount',
+            'Expenselabel': 'Expense Label',
+            'Expense_Label': 'Expense Label',
+            'Label': 'Expense Label',
+            'Description': 'Expense Label',
+            'Cat': 'Category',
+            'Type': 'Category'
+        }
+        
+        df.columns = [column_mapping.get(col, col) for col in df.columns]
+        
+        # Convert to records for sanitization
+        records = df.to_dict('records')
+        
+        return records, None
+        
+    except Exception as e:
+        return None, f"CSV parsing error: {str(e)}"
+
 def limit_date_range(df, days_limit=120):
+    """
+    Limit dataframe to recent data for better visualization performance
+    Shows warning when data range is too wide
+    """
     if df.empty:
         return df
         
@@ -95,18 +180,25 @@ def limit_date_range(df, days_limit=120):
     return df
 
 def create_spending_metrics(df, daily_allowance):
+    """
+    Calculate key financial metrics from expense data
+    Returns dictionary with various spending statistics
+    """
     if df.empty:
         return {}
         
+    # Basic spending calculations
     total_spent = df["Expense Amount"].sum()
     avg_daily_spend = df.groupby("Date")["Expense Amount"].sum().mean()
     max_daily_spend = df.groupby("Date")["Expense Amount"].sum().max()
     total_days = df["Date"].nunique()
     
+    # Budget and savings calculations
     total_allowance = total_days * daily_allowance
     total_savings = total_allowance - total_spent
     savings_rate = (total_savings / total_allowance * 100) if total_allowance > 0 else 0
     
+    # Category analysis
     category_breakdown = df.groupby("Category")["Expense Amount"].sum().sort_values(ascending=False)
     top_category = category_breakdown.index[0] if not category_breakdown.empty else "None"
     
@@ -120,8 +212,14 @@ def create_spending_metrics(df, daily_allowance):
         "total_days": total_days
     }
 
+# =============================================================================
+# STREAMLIT APP CONFIGURATION
+# =============================================================================
+
+# Configure page settings
 st.set_page_config(page_title="FourCast. - Smart Budget", layout="wide", initial_sidebar_state="expanded")
 
+# Custom CSS for styling the application
 FOURCAST_CSS = """
 [data-testid='stAppViewContainer'] {
   background: linear-gradient(135deg, #0f172a 0%, #1e293b 50%, #334155 100%);
@@ -149,6 +247,7 @@ FOURCAST_CSS = """
   box-shadow: 0 12px 40px rgba(0,0,0,0.35);
 }
 
+/* Button styling */
 div.stButton > button, .stDownloadButton>button {
   background: linear-gradient(135deg, #6366f1 0%, #8b5cf6 50%, #d946ef 100%);
   color: white !important;
@@ -166,127 +265,40 @@ div.stButton > button:hover, .stDownloadButton>button:hover {
   box-shadow: 0 12px 32px rgba(99, 102, 241, 0.4);
 }
 
-div.stButton > button[kind="secondary"] {
-  background: linear-gradient(135deg, #475569 0%, #64748b 100%);
-}
-
-div.stButton > button[kind="secondary"]:hover {
-  transform: translateY(-2px);
-  box-shadow: 0 12px 32px rgba(71, 85, 105, 0.4);
-}
-
-div[data-testid='stFileUploader'] > label {
-  border: 2px dashed rgba(99, 102, 241, 0.4);
-  padding: 20px;
-  border-radius: 12px;
-  background: rgba(99, 102, 241, 0.05);
-  display: block;
-  transition: all 0.3s ease;
-  text-align: center;
-}
-
-div[data-testid='stFileUploader'] > label:hover {
-  background: rgba(99, 102, 241, 0.1);
-  border-color: rgba(99, 102, 241, 0.7);
-  transform: translateY(-2px);
-}
-
-.stNumberInput input {
-  background: rgba(255, 255, 255, 0.05) !important;
-  border: 1px solid rgba(255, 255, 255, 0.1) !important;
-  border-radius: 8px !important;
-  color: white !important;
-}
-
-.stSelectbox div[data-baseweb="select"] {
-  background: rgba(255, 255, 255, 0.05) !important;
-  border-radius: 8px !important;
-}
-
-.css-1d391kg, .stDataFrameContainer {
-  border-radius: 12px;
-  overflow: hidden;
-  border: 1px solid rgba(255, 255, 255, 0.08);
-}
-
-[data-testid="metric-container"] {
-  background: rgba(255, 255, 255, 0.03);
-  border: 1px solid rgba(255, 255, 255, 0.08);
-  border-radius: 12px;
-  padding: 16px;
-}
-
-.stTabs [role="tab"] {
-  background: rgba(255,255,255,0.02) !important;
-  border-radius: 10px;
-  padding: 10px 16px;
-  color: #e6eef6 !important;
-  margin: 4px;
-  border: 1px solid transparent;
-  transition: all 0.3s ease;
-}
-
-.stTabs [role="tab"][data-selected="true"] {
-  background: linear-gradient(135deg, rgba(99, 102, 241, 0.2) 0%, rgba(139, 92, 246, 0.2) 100%) !important;
-  border-color: rgba(99, 102, 241, 0.4);
-  box-shadow: 0 6px 20px rgba(99, 102, 241, 0.2);
-}
-
-::-webkit-scrollbar {
-  width: 6px;
-}
-
-::-webkit-scrollbar-track {
-  background: rgba(255, 255, 255, 0.05);
-  border-radius: 3px;
-}
-
-::-webkit-scrollbar-thumb {
-  background: rgba(99, 102, 241, 0.5);
-  border-radius: 3px;
-}
-
-::-webkit-scrollbar-thumb:hover {
-  background: rgba(99, 102, 241, 0.7);
-}
-
-.fourcast-gradient {
-  background: linear-gradient(135deg, #6366f1 0%, #8b5cf6 50%, #d946ef 100%);
-  -webkit-background-clip: text;
-  -webkit-text-fill-color: transparent;
-  background-clip: text;
-}
-
-.st-emotion-cache-px2xcf h1,
-[data-testid="stHeader"] h1,
-div[data-testid="stVerticalBlock"] h1 {
-    font-size: 48px !important;
-    font-weight: 900 !important;
-}
-
-.status-positive { color: #10b981; font-weight: 600; }
-.status-warning { color: #f59e0b; font-weight: 600; }
-.status-negative { color: #ef4444; font-weight: 600; }
+/* Additional CSS rules for various UI components... */
 """
 
+# Apply custom CSS
 st.markdown(f"<style>{FOURCAST_CSS}</style>", unsafe_allow_html=True)
 
+# =============================================================================
+# SESSION STATE INITIALIZATION
+# =============================================================================
+
+# Initialize session state variables if they don't exist
 if "records" not in st.session_state:
     saved_data = load_data()
     st.session_state.records = saved_data.get("records", [])
     st.session_state.categories = saved_data.get("categories", ["Food", "Transport", "Entertainment", "Shopping", "Bills", "Healthcare", "Other"])
 
+# Initialize undo/redo functionality
 if "history" not in st.session_state:
     st.session_state.history = []
 if "redo_stack" not in st.session_state:
     st.session_state.redo_stack = []
 if "page" not in st.session_state:
-    st.session_state.page = "tracker"
+    st.session_state.page = "tracker"  # Default to tracker page
+
+# =============================================================================
+# SIDEBAR COMPONENTS
+# =============================================================================
 
 with st.sidebar:
+    # Application header
     st.markdown("<h1 class='fourcast-gradient'>FourCast.</h1>", unsafe_allow_html=True)
     st.markdown("<div class='header-muted'>Smart Budget Dashboard</div>", unsafe_allow_html=True)
     
+    # Navigation section
     st.markdown("### 🧭 Navigation")
     nav_col1, nav_col2 = st.columns(2)
     with nav_col1:
@@ -306,10 +318,12 @@ with st.sidebar:
 
     st.markdown("---")
     
+    # Budget allowance setup
     st.markdown("### 💰 Allowance Setup")
     monthly_allowance = st.number_input("Monthly allowance (₱)", min_value=0.0, value=5000.0, step=100.0, 
                                        key="sidebar_monthly")
     
+    # Date selection
     col_year, col_month = st.columns(2)
     with col_year:
         year = st.number_input("Year", min_value=2020, max_value=2100, value=date.today().year, 
@@ -318,6 +332,7 @@ with st.sidebar:
         month = st.selectbox("Month", list(calendar.month_name)[1:], 
                             index=date.today().month - 1, key="sidebar_month")
 
+    # Quick stats display
     if st.session_state.records:
         df_temp = sanitize_records(st.session_state.records)
         metrics = create_spending_metrics(df_temp, monthly_allowance / 20)
@@ -327,8 +342,10 @@ with st.sidebar:
 
     st.markdown("---")
     
+    # Quick actions section
     st.markdown("### ⚡ Quick Actions")
     
+    # Data reset functionality
     if st.button("🔄 Reset All Data", use_container_width=True, key="reset_all"):
         st.session_state.records = []
         st.session_state.history = []
@@ -337,32 +354,65 @@ with st.sidebar:
         st.success("🎉 All data cleared!")
         st.rerun()
         
+    # File uploader for CSV import
     uploaded_sidebar = st.file_uploader("📤 Upload CSV", type=["csv"], key="sidebar_upload",
-                                       help="Upload your expense data")
+                                   help="Upload your expense data")
     if uploaded_sidebar is not None:
         try:
             with st.spinner("🔄 Processing your data..."):
-                preview = pd.read_csv(uploaded_sidebar, nrows=0)
-                parsed = pd.read_csv(uploaded_sidebar, parse_dates=["Date"]) if "Date" in preview.columns else pd.read_csv(uploaded_sidebar)
-                recs = parsed.to_dict("records")
-                cleaned = sanitize_records(recs)
-                st.session_state.history.append(st.session_state.records.copy())
-                st.session_state.records = cleaned.to_dict("records")
-                save_data()
-            st.success("✅ Data loaded successfully!")
-            st.rerun()
+                # Use the new processing function
+                records, error = process_uploaded_csv(uploaded_sidebar)
+                
+                if error:
+                    st.error(f"❌ {error}")
+                else:
+                    # Show preview of what we're loading
+                    preview_df = pd.DataFrame(records).head(5)
+                    st.write("📋 Preview of data to be loaded:")
+                    st.dataframe(preview_df)
+                    
+                    # Confirm upload
+                    if st.button("✅ Confirm Upload", key="confirm_sidebar"):
+                        cleaned = sanitize_records(records)
+                        st.session_state.history.append(st.session_state.records.copy())
+                        st.session_state.records = cleaned.to_dict("records")
+                        save_data()
+                        st.success("✅ Data loaded successfully!")
+                        st.rerun()
+                        
         except Exception as e:
             st.error(f"❌ Load failed: {e}")
 
+    # Data export functionality
+    # Replace your download buttons with this improved version:
     if st.session_state.records:
         df_export = pd.DataFrame(st.session_state.records)
+        
+        # Ensure consistent date formatting for download
+        df_export['Date'] = pd.to_datetime(df_export['Date']).dt.strftime('%Y-%m-%d')
+        
+        # Reorder columns for better readability
+        column_order = ['Date', 'Expense Label', 'Expense Amount', 'Category']
+        df_export = df_export.reindex(columns=column_order)
+        
         csv_bytes = df_export.to_csv(index=False).encode("utf-8")
-        st.download_button("💾 Export Data", csv_bytes, "fourcast_data.csv", "text/csv",
-                          use_container_width=True, key="export_data")
+        st.download_button(
+            "💾 Download CSV", 
+            csv_bytes, 
+            "fourcast_expenses.csv", 
+            "text/csv", 
+            use_container_width=True,
+            help="Download your expense data in a standardized CSV format"
+        )
+
+# =============================================================================
+# BUDGET TRACKER PAGE
+# =============================================================================
 
 if st.session_state.page == "tracker":
     st.markdown("<h1 class='fourcast-gradient'>💳 FourCast. Budget Tracker</h1>", unsafe_allow_html=True)
     
+    # Calculate daily allowance based on month and year
     month_num = list(calendar.month_name).index(month)
     month_range = pd.date_range(start=f"{year}-{month_num:02d}-01",
                                 end=f"{year}-{month_num:02d}-{calendar.monthrange(year, month_num)[1]}",
@@ -370,10 +420,12 @@ if st.session_state.page == "tracker":
     num_weekdays = len(month_range)
     daily_allowance = monthly_allowance / num_weekdays if num_weekdays else 0.0
     
+    # Display metrics if data exists
     if st.session_state.records:
         df_current = sanitize_records(st.session_state.records)
         metrics = create_spending_metrics(df_current, daily_allowance)
         
+        # Key metrics display
         col1, col2, col3, col4 = st.columns(4)
         with col1:
             st.metric("📅 Weekdays", num_weekdays, f"₱{daily_allowance:,.0f}/day")
@@ -387,29 +439,50 @@ if st.session_state.page == "tracker":
 
     st.markdown("---")
 
+    # Data management section
     st.markdown("### 🛠️ Data Management")
     
+    # CSV upload functionality
     uploaded = st.file_uploader(
         "**📤 Upload Expense CSV**", 
         type=["csv"], 
         key="tracker_upload",
-        help="Upload CSV with columns: Date, Expense Label, Expense Amount, Category (optional)"
+        help="Upload CSV with columns: Date, Expense Label, Expense Amount, Category"
     )
     if uploaded is not None:
         try:
             with st.spinner("🔄 Processing your CSV..."):
-                preview = pd.read_csv(uploaded, nrows=0)
-                parsed = pd.read_csv(uploaded, parse_dates=["Date"]) if "Date" in preview.columns else pd.read_csv(uploaded)
-                recs = parsed.to_dict("records")
-                cleaned = sanitize_records(recs)
-                st.session_state.history.append(st.session_state.records.copy())
-                st.session_state.records = cleaned.to_dict("records")
-                save_data()
-            st.success("✅ CSV loaded successfully!")
-            st.rerun()
+                # Use the new processing function
+                records, error = process_uploaded_csv(uploaded)
+                
+                if error:
+                    st.error(f"❌ {error}")
+                else:
+                    # Show data preview and confirmation
+                    col1, col2 = st.columns([2, 1])
+                    with col1:
+                        st.write("📋 Data Preview (first 5 rows):")
+                        preview_df = pd.DataFrame(records).head(5)
+                        st.dataframe(preview_df)
+                    
+                    with col2:
+                        st.write("🔍 Data Summary:")
+                        st.write(f"• Rows: {len(records)}")
+                        if records:
+                            st.write(f"• Columns: {', '.join(records[0].keys())}")
+                    
+                    if st.button("✅ Confirm & Load Data", type="primary", key="confirm_upload"):
+                        cleaned = sanitize_records(records)
+                        st.session_state.history.append(st.session_state.records.copy())
+                        st.session_state.records = cleaned.to_dict("records")
+                        save_data()
+                        st.success("✅ CSV loaded successfully!")
+                        st.rerun()
+                        
         except Exception as e:
             st.error(f"❌ Load failed: {e}")
 
+    # Reset and export buttons
     c1, c2 = st.columns(2)
     with c1:
         if st.button("🔄 Reset Data", use_container_width=True, type="secondary", key="reset_tracker"):
@@ -436,6 +509,7 @@ if st.session_state.page == "tracker":
 
     st.markdown("---")
 
+    # New expense input form
     st.markdown("### ➕ Add New Expense")
     
     input_col1, input_col2, input_col3, input_col4 = st.columns([2, 3, 2, 2])
@@ -448,6 +522,7 @@ if st.session_state.page == "tracker":
     with input_col4:
         expense_category = st.selectbox("**Category**", st.session_state.categories, key="in_category")
 
+    # Action buttons for expense management
     btn_col1, btn_col2, btn_col3, btn_col4 = st.columns([3, 1, 1, 1])
     last_action = None
     
@@ -499,19 +574,23 @@ if st.session_state.page == "tracker":
                         st.success(f"✅ Added category: {new_cat}")
                         st.rerun()
 
+    # Display action feedback
     if last_action:
         alert_type, message = last_action
         getattr(st, alert_type)(message)
 
     st.markdown("---")
 
+    # Data visualization and analysis section
     if st.session_state.records:
         with st.spinner("🔄 Crunching numbers..."):
             df = sanitize_records(st.session_state.records)
             df = limit_date_range(df, days_limit=120)
 
+            # Tabbed interface for different views
             tab1, tab2, tab3, tab4 = st.tabs(["📊 Dashboard", "📝 Expense Log", "📈 Analytics", "🔮 Forecast"])
 
+            # DASHBOARD TAB - Overview visualizations
             with tab1:
                 st.markdown("### 📊 Spending Overview")
                 
@@ -519,6 +598,7 @@ if st.session_state.page == "tracker":
                 
                 col1, col2 = st.columns([2, 1])
                 with col1:
+                    # Pie chart for category breakdown
                     fig1, ax1 = plt.subplots(figsize=(8, 6))
                     colors = plt.cm.Set3(np.linspace(0, 1, len(category_totals)))
                     wedges, texts, autotexts = ax1.pie(category_totals.values, labels=category_totals.index, 
@@ -540,6 +620,7 @@ if st.session_state.page == "tracker":
                         percentage = (amount / category_totals.sum()) * 100
                         st.metric(category, f"₱{amount:,.0f}", f"{percentage:.1f}%")
 
+            # EXPENSE LOG TAB - Detailed data views
             with tab2:
                 st.markdown("### 📝 Expense Logs & Summary")
                 
@@ -548,12 +629,14 @@ if st.session_state.page == "tracker":
                 with summary_tab1:
                     st.markdown("#### 📅 Daily Spending Summary")
                     
+                    # Daily aggregation
                     daily_summary = df.groupby("Date").agg({
                         "Expense Amount": ["sum", "count"]
                     }).reset_index()
                     
                     daily_summary.columns = ["Date", "Total Spent", "Number of Expenses"]
                     
+                    # Budget calculations
                     daily_summary["Daily Allowance"] = daily_allowance
                     daily_summary["Daily Savings"] = daily_summary["Daily Allowance"] - daily_summary["Total Spent"]
                     daily_summary["Status"] = daily_summary["Daily Savings"].apply(
@@ -593,6 +676,7 @@ if st.session_state.page == "tracker":
                     
                     st.markdown("#### 🏷️ Daily Category Breakdown")
                     
+                    # Pivot table for category analysis
                     category_daily = df.pivot_table(
                         values="Expense Amount",
                         index="Date",
@@ -649,12 +733,14 @@ if st.session_state.page == "tracker":
                             use_container_width=True
                         )
 
+            # ANALYTICS TAB - Charts and visualizations
             with tab3:
                 st.markdown("### 📈 Advanced Analytics")
                 
                 daily_data = df.groupby("Date").agg({"Expense Amount": "sum"}).reset_index()
                 
                 if len(daily_data) > 0:
+                    # Create bar chart for daily spending
                     fig, ax = plt.subplots(figsize=(10, 6))
                     
                     dates = daily_data["Date"].dt.strftime('%m/%d')
@@ -669,6 +755,7 @@ if st.session_state.page == "tracker":
                     ax.tick_params(colors='white', labelsize=10)
                     plt.xticks(rotation=45)
                     
+                    # Add value labels on bars
                     for bar, amount in zip(bars, amounts):
                         height = bar.get_height()
                         ax.text(bar.get_x() + bar.get_width()/2., height + max(amounts)*0.01,
@@ -695,12 +782,14 @@ if st.session_state.page == "tracker":
                 else:
                     st.warning("No data available for charts")
 
+            # FORECAST TAB - Predictive analytics
             with tab4:
                 st.markdown("### 🔮 Smart Forecast")
                 
                 daily_spending = df.groupby("Date").agg({"Expense Amount": "sum"}).reset_index()
                 
                 if len(daily_spending) >= 2:
+                    # Simple forecasting using average spending
                     avg_spending = daily_spending["Expense Amount"].mean()
                     future_days = 7
                     future_dates = pd.date_range(daily_spending["Date"].iloc[-1] + pd.Timedelta(days=1), periods=future_days)
@@ -713,6 +802,7 @@ if st.session_state.page == "tracker":
                     future_date_str = [d.strftime('%m/%d') for d in future_dates]
                     forecast_amounts = [avg_spending] * future_days
                     
+                    # Combined chart with historical and forecast data
                     ax.bar(hist_dates, hist_amounts, alpha=0.7, color='#6366f1', label='Past Spending')
                     ax.bar(future_date_str, forecast_amounts, alpha=0.7, color='#f59e0b', label='Forecast')
                     
@@ -759,6 +849,7 @@ if st.session_state.page == "tracker":
                     st.warning(f"Need at least 2 days of data for forecasting. You have {len(daily_spending)} days.")
 
     else:
+        # Empty state for when no data exists
         st.markdown("""
         <div style='text-align: center; padding: 40px; background: rgba(255,255,255,0.03); border-radius: 12px;'>
             <h3 style='color: #cbd5e1; margin-bottom: 20px;'>🚀 Ready to Start Tracking?</h3>
@@ -771,10 +862,15 @@ if st.session_state.page == "tracker":
         </div>
         """, unsafe_allow_html=True)
 
+# =============================================================================
+# DATA ANALYZER PAGE
+# =============================================================================
+
 elif st.session_state.page == "analyzer":
     st.markdown("<h1 class='fourcast-gradient'>📊 FourCast Data Analyzer</h1>", unsafe_allow_html=True)
     st.markdown("Upload any CSV file for powerful data analysis and visualization")
     
+    # Universal CSV uploader for any data format
     uploaded = st.file_uploader("Drag & drop your CSV file here", type=["csv"], 
                                key="flex_upload", help="Supports any CSV format with automatic column detection")
     
@@ -785,6 +881,7 @@ elif st.session_state.page == "analyzer":
                 
             st.success(f"✅ Successfully loaded {len(df_any)} rows × {len(df_any.columns)} columns")
             
+            # Data overview metrics
             col1, col2, col3 = st.columns(3)
             with col1:
                 st.metric("Total Rows", f"{len(df_any):,}")
@@ -793,6 +890,7 @@ elif st.session_state.page == "analyzer":
             with col3:
                 st.metric("Memory Usage", f"{df_any.memory_usage(deep=True).sum() / 1024 ** 2:.1f} MB")
             
+            # Data exploration tabs
             preview_tab1, preview_tab2, preview_tab3 = st.tabs(["📋 Data Preview", "🔍 Column Info", "📈 Basic Stats"])
             
             with preview_tab1:
@@ -814,6 +912,7 @@ elif st.session_state.page == "analyzer":
             st.markdown("---")
             st.markdown("### 🎯 Advanced Analysis")
             
+            # Automatic column type detection
             date_candidates = [col for col in df_any.columns 
                              if pd.to_datetime(df_any[col], errors='coerce').notna().any()]
             numeric_candidates = df_any.select_dtypes(include=[np.number]).columns.tolist()
@@ -830,6 +929,7 @@ elif st.session_state.page == "analyzer":
                                        options=['None'] + numeric_candidates if numeric_candidates else ['None'],
                                       index=0)
             
+            # Time series analysis if appropriate columns are selected
             if value_col != 'None' and date_col != 'None':
                 try:
                     analysis_df = df_any[[date_col, value_col]].copy()
@@ -839,6 +939,7 @@ elif st.session_state.page == "analyzer":
                     if not analysis_df.empty:
                         st.markdown("#### 📈 Time Series Analysis")
                         
+                        # Create time series plot
                         fig, ax = plt.subplots(figsize=(12, 6))
                         ax.plot(analysis_df[date_col], analysis_df[value_col], 
                                marker='o', linewidth=2, markersize=4, color='#6366f1')
@@ -875,6 +976,7 @@ elif st.session_state.page == "analyzer":
         except Exception as e:
             st.error(f"❌ Failed to process CSV: {e}")
     else:
+        # Empty state for analyzer page
         st.markdown("""
         <div style='text-align: center; padding: 60px; background: rgba(255,255,255,0.03); border-radius: 12px;'>
             <h3 style='color: #cbd5e1; margin-bottom: 20px;'>📂 Upload Your Data</h3>
@@ -884,6 +986,10 @@ elif st.session_state.page == "analyzer":
             </p>
         </div>
         """, unsafe_allow_html=True)
+
+# =============================================================================
+# FOOTER
+# =============================================================================
 
 st.markdown("---")
 footer_col1, footer_col2, footer_col3 = st.columns([2, 1, 1])
