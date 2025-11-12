@@ -894,7 +894,7 @@ elif st.session_state.page == "analyzer":
             preview_tab1, preview_tab2, preview_tab3 = st.tabs(["📋 Data Preview", "🔍 Column Info", "📈 Basic Stats"])
             
             with preview_tab1:
-                st.dataframe(df_any.head(10), use_container_width=True)
+                st.dataframe(df_any.head(100), use_container_width=True)
                 
             with preview_tab2:
                 col_info = pd.DataFrame({
@@ -912,9 +912,66 @@ elif st.session_state.page == "analyzer":
             st.markdown("---")
             st.markdown("### 🎯 Advanced Analysis")
             
-            # Automatic column type detection
-            date_candidates = [col for col in df_any.columns 
-                             if pd.to_datetime(df_any[col], errors='coerce').notna().any()]
+            # Enhanced column type detection
+            def detect_date_columns(df, sample_size=1000):
+                date_candidates = []
+                for col in df.columns:
+                    # Skip if already datetime
+                    if pd.api.types.is_datetime64_any_dtype(df[col]):
+                        date_candidates.append(col)
+                        continue
+                    
+                    # Sample the data for efficiency
+                    sample_data = df[col].dropna().head(sample_size)
+                    if len(sample_data) == 0:
+                        continue
+                        
+                    # Try to convert to datetime
+                    try:
+                        converted = pd.to_datetime(sample_data, errors='coerce')
+                        # Consider as date column if at least 70% conversion success and has reasonable date range
+                        success_rate = converted.notna().mean()
+                        if success_rate > 0.7:
+                            # Check if dates are reasonable (not all the same or unrealistic)
+                            unique_dates = converted.dropna().nunique()
+                            if unique_dates > 1:  # At least 2 different dates
+                                date_candidates.append(col)
+                    except:
+                        continue
+                return date_candidates
+
+            # Data validation function
+            def validate_data_for_analysis(df, date_col, value_col):
+                issues = []
+                
+                # Check for sufficient non-null data
+                date_null_pct = df[date_col].isna().mean()
+                value_null_pct = df[value_col].isna().mean()
+                
+                if date_null_pct > 0.7:
+                    issues.append(f"Date column '{date_col}' has {date_null_pct:.1%} missing values")
+                
+                if value_null_pct > 0.7:
+                    issues.append(f"Value column '{value_col}' has {value_null_pct:.1%} missing values")
+                
+                # Check if value column is numeric
+                if not pd.api.types.is_numeric_dtype(df[value_col]):
+                    issues.append(f"Value column '{value_col}' is not numeric")
+                
+                # Check if we'll have enough data after cleaning
+                temp_df = df[[date_col, value_col]].copy()
+                temp_df[date_col] = pd.to_datetime(temp_df[date_col], errors='coerce')
+                clean_count = temp_df.dropna().shape[0]
+                original_count = temp_df.shape[0]
+                
+                if clean_count == 0:
+                    issues.append("No valid data remains after cleaning date and value columns")
+                elif clean_count / original_count < 0.3:
+                    issues.append(f"Only {clean_count}/{original_count} rows remain valid after cleaning")
+                
+                return len(issues) == 0, issues
+
+            date_candidates = detect_date_columns(df_any)
             numeric_candidates = df_any.select_dtypes(include=[np.number]).columns.tolist()
             
             analysis_col1, analysis_col2 = st.columns(2)
@@ -931,41 +988,82 @@ elif st.session_state.page == "analyzer":
             
             # Time series analysis if appropriate columns are selected
             if value_col != 'None' and date_col != 'None':
-                try:
-                    analysis_df = df_any[[date_col, value_col]].copy()
-                    analysis_df[date_col] = pd.to_datetime(analysis_df[date_col], errors='coerce')
-                    analysis_df = analysis_df.dropna()
-                    
-                    if not analysis_df.empty:
-                        st.markdown("#### 📈 Time Series Analysis")
-                        
-                        # Create time series plot
-                        fig, ax = plt.subplots(figsize=(12, 6))
-                        ax.plot(analysis_df[date_col], analysis_df[value_col], 
-                               marker='o', linewidth=2, markersize=4, color='#6366f1')
-                        ax.set_title(f"Time Series: {value_col} over Time", color='white', fontsize=14)
-                        ax.grid(alpha=0.3)
-                        ax.tick_params(colors='white')
-                        plt.xticks(rotation=45)
-                        st.pyplot(fig)
-                        
-                        st.markdown("#### 📊 Statistical Insights")
-                        insights_col1, insights_col2, insights_col3 = st.columns(3)
-                        
-                        with insights_col1:
-                            st.metric("Mean", f"{analysis_df[value_col].mean():.2f}")
-                            st.metric("Median", f"{analysis_df[value_col].median():.2f}")
-                            
-                        with insights_col2:
-                            st.metric("Std Dev", f"{analysis_df[value_col].std():.2f}")
-                            st.metric("Variance", f"{analysis_df[value_col].var():.2f}")
-                            
-                        with insights_col3:
-                            st.metric("Min", f"{analysis_df[value_col].min():.2f}")
-                            st.metric("Max", f"{analysis_df[value_col].max():.2f}")
+                # Validate data before analysis
+                is_valid, validation_issues = validate_data_for_analysis(df_any, date_col, value_col)
                 
-                except Exception as e:
-                    st.error(f"Analysis error: {e}")
+                if not is_valid:
+                    st.warning("⚠️ Data validation issues detected:")
+                    for issue in validation_issues:
+                        st.write(f"- {issue}")
+                    st.info("💡 Please select different columns or clean your data before analysis.")
+                else:
+                    try:
+                        analysis_df = df_any[[date_col, value_col]].copy()
+                        analysis_df[date_col] = pd.to_datetime(analysis_df[date_col], errors='coerce')
+                        analysis_df = analysis_df.dropna()
+                        
+                        if not analysis_df.empty:
+                            # Sort by date for proper time series
+                            analysis_df = analysis_df.sort_values(date_col)
+                            
+                            st.markdown("#### 📈 Time Series Analysis")
+                            
+                            # Create time series plot with enhancements
+                            fig, ax = plt.subplots(figsize=(12, 6))
+                            ax.plot(analysis_df[date_col], analysis_df[value_col], 
+                                   marker='o', linewidth=2, markersize=4, color='#6366f1', alpha=0.7)
+                            ax.set_title(f"Time Series: {value_col} over Time", color='white', fontsize=14)
+                            ax.set_xlabel(date_col, color='white', fontsize=12)
+                            ax.set_ylabel(value_col, color='white', fontsize=12)
+                            ax.grid(alpha=0.3)
+                            ax.tick_params(colors='white')
+                            plt.xticks(rotation=45)
+                            plt.tight_layout()
+                            st.pyplot(fig)
+                            
+                            st.markdown("#### 📊 Statistical Insights")
+                            insights_col1, insights_col2, insights_col3 = st.columns(3)
+                            
+                            values = analysis_df[value_col]
+                            
+                            with insights_col1:
+                                st.metric("Mean", f"{values.mean():.2f}")
+                                st.metric("Median", f"{values.median():.2f}")
+                                st.metric("Count", f"{len(values):,}")
+                                
+                            with insights_col2:
+                                st.metric("Std Dev", f"{values.std():.2f}" if len(values) > 1 else "N/A")
+                                st.metric("Variance", f"{values.var():.2f}" if len(values) > 1 else "N/A")
+                                st.metric("Range", f"{values.max() - values.min():.2f}")
+                                
+                            with insights_col3:
+                                st.metric("Min", f"{values.min():.2f}")
+                                st.metric("Max", f"{values.max():.2f}")
+                                st.metric("25th %ile", f"{values.quantile(0.25):.2f}")
+                            
+                            # Additional insights
+                            if len(analysis_df) > 1:
+                                st.markdown("#### 📅 Time-based Insights")
+                                time_col1, time_col2, time_col3 = st.columns(3)
+                                
+                                with time_col1:
+                                    time_range = analysis_df[date_col].max() - analysis_df[date_col].min()
+                                    st.metric("Time Period", f"{time_range.days} days")
+                                    
+                                with time_col2:
+                                    data_points_per_day = len(analysis_df) / max(time_range.days, 1)
+                                    st.metric("Data Points/Day", f"{data_points_per_day:.1f}")
+                                    
+                                with time_col3:
+                                    total_change = values.iloc[-1] - values.iloc[0]
+                                    st.metric("Total Change", f"{total_change:.2f}")
+                        
+                        else:
+                            st.warning("No valid data available for analysis after cleaning.")
+                            
+                    except Exception as e:
+                        st.error(f"Analysis error: {str(e)}")
+                        st.info("This might be due to incompatible data types or formatting issues in your selected columns.")
             
             st.markdown("---")
             st.markdown("### 💾 Export Results")
